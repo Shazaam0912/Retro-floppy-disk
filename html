@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retro Floppy Disk - 3D Hero Object</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Inter', sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        #ui-container {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 20px;
+            z-index: 10;
+        }
+        .btn {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 30px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .btn:hover {
+            background: white;
+            color: black;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            pointer-events: none;
+            transition: opacity 0.5s;
+        }
+    </style>
+    <!-- Import Three.js and Exporter -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="loading">Generative Model Initializing...</div>
+    <div id="canvas-container"></div>
+
+    <div id="ui-container">
+        <button class="btn" id="export-btn">Download .GLB</button>
+        <button class="btn" id="toggle-anim">Pause Rotation</button>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+        import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
+
+        // --- Configuration ---
+        const CONFIG = {
+            colorBody: 0x1a1a1a, // Matte Black
+            colorShutter: 0x888888, // Dark Gray/Silver
+            colorLabelStripe: '#F4C430', // Saffron/Golden Yellow
+            animSpeed: 0.005
+        };
+
+        let scene, camera, renderer, controls, floppyGroup;
+        let isRotating = true;
+
+        init();
+        animate();
+
+        function init() {
+            // 1. Setup Scene
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111111);
+            // Soft fog for depth
+            scene.fog = new THREE.Fog(0x111111, 10, 50);
+
+            // 2. Camera
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 2, 12); // Hero shot angle
+
+            // 3. Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.2;
+            container.appendChild(renderer.domElement);
+
+            // 4. Lighting (Studio Setup)
+            // Increased ambient light for better visibility of dark areas
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            // Stronger main key light
+            const mainLight = new THREE.DirectionalLight(0xffffff, 3.0);
+            mainLight.position.set(5, 10, 7);
+            mainLight.castShadow = true;
+            mainLight.shadow.mapSize.width = 2048;
+            mainLight.shadow.mapSize.height = 2048;
+            mainLight.shadow.bias = -0.001;
+            scene.add(mainLight);
+
+            // Intenser blue rim light for dramatic edge
+            const rimLight = new THREE.SpotLight(0x4455ff, 10.0);
+            rimLight.position.set(-10, 5, -5);
+            rimLight.lookAt(0, 0, 0);
+            scene.add(rimLight);
+
+            // NEW: Warm Point Light to highlight the gold label
+            const warmLight = new THREE.PointLight(0xffaa00, 10.0, 20);
+            warmLight.position.set(2, 2, 5);
+            scene.add(warmLight);
+
+            // NEW: Soft Fill Light from the opposite side
+            const fillLight = new THREE.DirectionalLight(0xcceeff, 1.5);
+            fillLight.position.set(-5, -2, 5);
+            scene.add(fillLight);
+            
+            // Reflection Environment
+            const pmremGenerator = new THREE.PMREMGenerator(renderer);
+            pmremGenerator.compileEquirectangularShader();
+            // We simulate an env map with a simple scene background or lights, 
+            // but for "High Detail" metal, a simple cube map or just good light placement works well enough 
+            // without loading external HDRIs which might fail cross-origin.
+
+            // 5. Controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // 6. Create Floppy Disk
+            createFloppyDisk();
+
+            // 7. UI Events
+            document.getElementById('export-btn').addEventListener('click', exportGLTF);
+            document.getElementById('toggle-anim').addEventListener('click', () => {
+                isRotating = !isRotating;
+                document.getElementById('toggle-anim').innerText = isRotating ? "Pause Rotation" : "Resume Rotation";
+            });
+            
+            // Hide loader
+            setTimeout(() => {
+                document.getElementById('loading').style.opacity = 0;
+            }, 1000);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function createFloppyDisk() {
+            floppyGroup = new THREE.Group();
+            scene.add(floppyGroup);
+
+            // Dimensions (approx based on 3.5" floppy)
+            // Width: 90mm, Height: 94mm, Thickness: 3.3mm
+            // Scaled down to fit view: 9, 9.4, 0.33
+            const width = 9;
+            const height = 9.4;
+            const depth = 0.33;
+            const bevelSize = 0.05;
+
+            // --- A. Main Body (Plastic) ---
+            const shape = new THREE.Shape();
+            // Draw rounded rect with cut corner
+            const r = 0.2; // corner radius
+            const w = width / 2;
+            const h = height / 2;
+            const cutSize = 0.8; // Size of the diagonal cut
+
+            // Start bottom center
+            shape.moveTo(0, -h);
+            // Bottom Right
+            shape.lineTo(w - r, -h);
+            shape.quadraticCurveTo(w, -h, w, -h + r);
+            // Top Right (Cut Corner)
+            shape.lineTo(w, h - cutSize); 
+            shape.lineTo(w - cutSize, h);
+            // Top Left
+            shape.lineTo(-w + r, h);
+            shape.quadraticCurveTo(-w, h, -w, h - r);
+            // Bottom Left
+            shape.lineTo(-w, -h + r);
+            shape.quadraticCurveTo(-w, -h, -w + r, -h);
+            shape.closePath();
+
+            // Add Holes (Write Protect & HD)
+            // Write protect (Bottom Left)
+            const holeSize = 0.6;
+            const holeY = -h + 1.0;
+            const holeX = -w + 0.8;
+            const wpHole = new THREE.Path();
+            wpHole.moveTo(holeX, holeY);
+            wpHole.lineTo(holeX + holeSize, holeY);
+            wpHole.lineTo(holeX + holeSize, holeY + holeSize);
+            wpHole.lineTo(holeX, holeY + holeSize);
+            wpHole.closePath();
+            shape.holes.push(wpHole);
+
+            // HD Hole (Bottom Right)
+            const hdHole = new THREE.Path();
+            const hdX = w - 0.8 - holeSize;
+            hdHole.moveTo(hdX, holeY);
+            hdHole.lineTo(hdX + holeSize, holeY);
+            hdHole.lineTo(hdX + holeSize, holeY + holeSize);
+            hdHole.lineTo(hdX, holeY + holeSize);
+            hdHole.closePath();
+            shape.holes.push(hdHole);
+
+            const extrudeSettings = {
+                steps: 1,
+                depth: depth,
+                bevelEnabled: true,
+                bevelThickness: 0.02,
+                bevelSize: bevelSize,
+                bevelSegments: 3
+            };
+
+            const bodyGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            // Center the geometry
+            bodyGeo.center();
+
+            const plasticMaterial = new THREE.MeshStandardMaterial({
+                color: CONFIG.colorBody,
+                roughness: 0.7,
+                metalness: 0.1,
+            });
+
+            const bodyMesh = new THREE.Mesh(bodyGeo, plasticMaterial);
+            bodyMesh.castShadow = true;
+            bodyMesh.receiveShadow = true;
+            floppyGroup.add(bodyMesh);
+
+
+            // --- B. Shutter (Metal) ---
+            // The shutter slides over the top part.
+            const shutterWidth = width * 0.75;
+            const shutterHeight = 3.5;
+            const shutterDepth = depth + 0.1; // slightly thicker to wrap around
+
+            const shutterGeo = new THREE.BoxGeometry(shutterWidth, shutterHeight, shutterDepth);
+            // Create Shutter Texture with "9.8" text
+            const shutterTexture = createShutterTexture();
+            
+            const metalMaterial = new THREE.MeshStandardMaterial({
+                color: CONFIG.colorShutter,
+                roughness: 0.3,
+                metalness: 0.9,
+                map: shutterTexture // Apply text to metal
+            });
+
+            const shutterMesh = new THREE.Mesh(shutterGeo, metalMaterial);
+            shutterMesh.position.set(0, (height/2) - (shutterHeight/2) + 0.1, 0);
+            shutterMesh.castShadow = true;
+            floppyGroup.add(shutterMesh);
+
+            // Shutter Windows (Black insides)
+            // We simulate the window by adding a black rectangle on the shutter surface
+            const winGeo = new THREE.PlaneGeometry(1.2, 2.5);
+            const blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+            const shutterWindow = new THREE.Mesh(winGeo, blackMat);
+            shutterWindow.position.set(1.5, 0, shutterDepth/2 + 0.01); // Slightly in front
+            shutterMesh.add(shutterWindow);
+
+
+            // --- C. Label (Paper) ---
+            // "MY BEST IDEAS"
+            // Width approx 70% of disk, Height approx 50%
+            const labelWidth = 6.5;
+            const labelHeight = 5.0;
+            
+            const labelTexture = createLabelTexture();
+            const labelGeo = new THREE.PlaneGeometry(labelWidth, labelHeight);
+            // Slight curve to simulate sticker? No, flat is fine for retro look.
+            
+            const labelMaterial = new THREE.MeshStandardMaterial({
+                map: labelTexture,
+                roughness: 0.8,
+                metalness: 0.0,
+                side: THREE.DoubleSide,
+                transparent: true
+            });
+
+            const labelMesh = new THREE.Mesh(labelGeo, labelMaterial);
+            // Position on the front face below shutter
+            // Body z is roughly depth/2. 
+            labelMesh.position.set(0, -1.5, (depth/2) + 0.04); 
+            
+            // Add a slight rotation to X to conform if bevel changes, but flat is ok
+            floppyGroup.add(labelMesh);
+
+            // --- D. Hub (Metal Circle on back) ---
+            const hubRadius = 1.8;
+            const hubGeo = new THREE.CylinderGeometry(hubRadius, hubRadius, 0.05, 32);
+            const hubMesh = new THREE.Mesh(hubGeo, metalMaterial);
+            hubMesh.rotation.x = Math.PI / 2;
+            hubMesh.position.set(0, -0.5, -(depth/2) - 0.02);
+            floppyGroup.add(hubMesh);
+            
+            // Add "Hub Holes" (The two little squares in the metal hub)
+            const hubHoleGeo = new THREE.BoxGeometry(0.4, 0.4, 0.1);
+            const hubHoleMesh1 = new THREE.Mesh(hubHoleGeo, blackMat);
+            hubHoleMesh1.position.set(0.8, 0.5, 0);
+            hubMesh.add(hubHoleMesh1);
+            
+            const hubHoleMesh2 = new THREE.Mesh(hubHoleGeo, blackMat);
+            hubHoleMesh2.position.set(-0.2, -0.8, 0); // Asymmetrical look
+            hubMesh.add(hubHoleMesh2);
+
+            // --- E. "HD" Emboss Simulation (Optional Text Mesh) ---
+            // For high performance, we skip actual geometry text and rely on the clean shape holes we made.
+        }
+
+        // --- Texture Generators (Canvas API) ---
+
+        function createLabelTexture() {
+            const size = 1024;
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+
+            // 1. White Paper Background
+            // Rounded corners for the sticker itself
+            ctx.fillStyle = '#ffffff';
+            roundRect(ctx, 0, 0, size, size, 40);
+            ctx.fill();
+
+            // 2. Yellow Top Stripe
+            ctx.fillStyle = CONFIG.colorLabelStripe;
+            // Stripe with rounded top corners
+            ctx.beginPath();
+            ctx.roundRect(20, 20, size-40, 150, [30, 30, 10, 10]);
+            ctx.fill();
+
+            // 3. Text "MY BEST IDEAS"
+            ctx.fillStyle = '#000000';
+            ctx.textBaseline = 'top';
+            
+            // "MY"
+            ctx.font = 'bold 120px serif'; // Georgia-like
+            ctx.fillText('MY', 50, 250);
+
+            // Dotted Line 1
+            drawDottedLine(ctx, 50, 370, size - 50);
+
+            // "BEST"
+            ctx.textAlign = 'right';
+            ctx.font = 'bold 120px serif';
+            ctx.fillText('BEST', size - 50, 420);
+
+            // Dotted Line 2
+            drawDottedLine(ctx, 50, 540, size - 50);
+
+            // "IDEAS" (Stylized)
+            ctx.textAlign = 'center';
+            ctx.font = 'italic bold 140px serif'; 
+            // Making it look a bit "editorial"
+            ctx.fillText('IDEAS', size / 2, 590);
+
+            // Dotted Line 3
+            drawDottedLine(ctx, 50, 730, size - 50);
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.anisotropy = 16; // Crisp at angles
+            tex.colorSpace = THREE.SRGBColorSpace;
+            return tex;
+        }
+
+        function createShutterTexture() {
+            const w = 512;
+            const h = 512;
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+
+            // Metal Base Color
+            ctx.fillStyle = '#999999';
+            ctx.fillRect(0, 0, w, h);
+
+            // Add some noise/scratches
+            for(let i=0; i<1000; i++) {
+                ctx.fillStyle = `rgba(255,255,255, ${Math.random() * 0.1})`;
+                const x = Math.random() * w;
+                const y = Math.random() * h;
+                ctx.fillRect(x, y, Math.random()*50, 1);
+            }
+
+            // Text "9.8"
+            ctx.fillStyle = '#111111'; // Almost black ink
+            ctx.font = '140px Arial Narrow, sans-serif';
+            ctx.textAlign = 'left';
+            // Position carefully to match reference
+            ctx.fillText('9.8', 40, 200); 
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            return tex;
+        }
+
+        // Helper for dotted lines
+        function drawDottedLine(ctx, x1, y, x2) {
+            ctx.beginPath();
+            ctx.setLineDash([5, 10]);
+            ctx.lineWidth = 3;
+            ctx.moveTo(x1, y);
+            ctx.lineTo(x2, y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // Helper for rounded rect
+        function roundRect(ctx, x, y, w, h, r) {
+            if (w < 2 * r) r = w / 2;
+            if (h < 2 * r) r = h / 2;
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.arcTo(x + w, y, x + w, y + h, r);
+            ctx.arcTo(x + w, y + h, x, y + h, r);
+            ctx.arcTo(x, y + h, x, y, r);
+            ctx.arcTo(x, y, x + w, y, r);
+            ctx.closePath();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (floppyGroup && isRotating) {
+                floppyGroup.rotation.y += CONFIG.animSpeed;
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // --- Export Functionality ---
+        function exportGLTF() {
+            const exporter = new GLTFExporter();
+            // Parse the floppy group, not the whole scene (avoids exporting lights/camera helpers)
+            exporter.parse(
+                floppyGroup,
+                function (result) {
+                    saveArrayBuffer(result, 'retro-floppy-disk.glb');
+                },
+                function (error) {
+                    console.error('An error happened during export:', error);
+                },
+                { binary: true }
+            );
+        }
+
+        function saveArrayBuffer(buffer, filename) {
+            const blob = new Blob([buffer], { type: 'application/octet-stream' });
+            const link = document.createElement('a');
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            link.click();
+            document.body.removeChild(link);
+        }
+
+    </script>
+</body>
+</html>
